@@ -63,3 +63,6 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.gemm-f16]
 opt-level = 3
+
+[patch.crates-io]
+charabia = { git = "https://github.com/abco20/charabia.git", rev = "809f87cf7ac35a2135c81727db507c39e0f106c1" }

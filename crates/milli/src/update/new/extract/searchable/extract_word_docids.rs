@@ -7,7 +7,7 @@ use bumpalo::collections::vec::Vec as BumpVec;
 use bumpalo::Bump;
 use permissive_json_pointer::contained_in;
 
-use super::tokenize_document::{tokenizer_builder, DocumentTokenizer};
+use super::tokenize_document::{tokenizer_builder, DocumentTokenizer, SearchTermKind};
 use super::{match_searchable_field, OneOrTwoTokenizers};
 use crate::fields_ids_map::metadata::Metadata;
 use crate::update::new::document::DocumentContext;
@@ -70,6 +70,7 @@ impl<'extractor> WordDocidsBalancedCaches<'extractor> {
         word: &str,
         exact: bool,
         field_db_extraction: FieldDbExtraction,
+        count_word: bool,
         docid: u32,
         bump: &Bump,
     ) -> Result<()> {
@@ -102,7 +103,7 @@ impl<'extractor> WordDocidsBalancedCaches<'extractor> {
             self.flush_fid_word_count(&mut buffer)?;
         }
 
-        if field_db_extraction == FieldDbExtraction::Extract {
+        if field_db_extraction == FieldDbExtraction::Extract && count_word {
             self.fid_word_count
                 .entry(field_id)
                 .and_modify(|(_current_count, new_count)| *new_count.get_or_insert(0) += 1)
@@ -122,6 +123,7 @@ impl<'extractor> WordDocidsBalancedCaches<'extractor> {
         word: &str,
         exact: bool,
         field_db_extraction: FieldDbExtraction,
+        count_word: bool,
         docid: u32,
         bump: &Bump,
     ) -> Result<()> {
@@ -154,7 +156,7 @@ impl<'extractor> WordDocidsBalancedCaches<'extractor> {
             self.flush_fid_word_count(&mut buffer)?;
         }
 
-        if field_db_extraction == FieldDbExtraction::Extract {
+        if field_db_extraction == FieldDbExtraction::Extract && count_word {
             self.fid_word_count
                 .entry(field_id)
                 .and_modify(|(current_count, _new_count)| *current_count.get_or_insert(0) += 1)
@@ -370,17 +372,19 @@ impl WordDocidsExtractors {
 
         match document_change {
             DocumentChange::Deletion(inner) => {
-                let mut token_fn = |fname: &str, fid, pos, word: &str| {
-                    cached_sorter.insert_del_u32(
-                        fid,
-                        pos,
-                        word,
-                        is_exact(fname, word),
-                        FieldDbExtraction::Extract,
-                        inner.docid(),
-                        doc_alloc,
-                    )
-                };
+                let mut token_fn =
+                    |fname: &str, fid, pos, word: &str, term_kind: SearchTermKind| {
+                        cached_sorter.insert_del_u32(
+                            fid,
+                            pos,
+                            word,
+                            is_exact(fname, word) && term_kind.is_original(),
+                            FieldDbExtraction::Extract,
+                            term_kind.is_original(),
+                            inner.docid(),
+                            doc_alloc,
+                        )
+                    };
                 document_tokenizer.tokenize_document(
                     inner.current(rtxn, index, context.db_fields_ids_map)?,
                     &mut should_tokenize,
@@ -399,34 +403,38 @@ impl WordDocidsExtractors {
                     return Ok(());
                 }
 
-                let mut token_fn = |fname: &str, fid, pos, word: &str| {
-                    cached_sorter.insert_del_u32(
-                        fid,
-                        pos,
-                        word,
-                        is_exact(fname, word),
-                        FieldDbExtraction::Extract,
-                        inner.docid(),
-                        doc_alloc,
-                    )
-                };
+                let mut token_fn =
+                    |fname: &str, fid, pos, word: &str, term_kind: SearchTermKind| {
+                        cached_sorter.insert_del_u32(
+                            fid,
+                            pos,
+                            word,
+                            is_exact(fname, word) && term_kind.is_original(),
+                            FieldDbExtraction::Extract,
+                            term_kind.is_original(),
+                            inner.docid(),
+                            doc_alloc,
+                        )
+                    };
                 document_tokenizer.tokenize_document(
                     inner.current(rtxn, index, context.db_fields_ids_map)?,
                     &mut should_tokenize,
                     &mut token_fn,
                 )?;
 
-                let mut token_fn = |fname: &str, fid, pos, word: &str| {
-                    cached_sorter.insert_add_u32(
-                        fid,
-                        pos,
-                        word,
-                        is_exact(fname, word),
-                        FieldDbExtraction::Extract,
-                        inner.docid(),
-                        doc_alloc,
-                    )
-                };
+                let mut token_fn =
+                    |fname: &str, fid, pos, word: &str, term_kind: SearchTermKind| {
+                        cached_sorter.insert_add_u32(
+                            fid,
+                            pos,
+                            word,
+                            is_exact(fname, word) && term_kind.is_original(),
+                            FieldDbExtraction::Extract,
+                            term_kind.is_original(),
+                            inner.docid(),
+                            doc_alloc,
+                        )
+                    };
                 document_tokenizer.tokenize_document(
                     inner.merged(rtxn, index, context.db_fields_ids_map)?,
                     &mut should_tokenize,
@@ -434,17 +442,19 @@ impl WordDocidsExtractors {
                 )?;
             }
             DocumentChange::Insertion(inner) => {
-                let mut token_fn = |fname: &str, fid, pos, word: &str| {
-                    cached_sorter.insert_add_u32(
-                        fid,
-                        pos,
-                        word,
-                        is_exact(fname, word),
-                        FieldDbExtraction::Extract,
-                        inner.docid(),
-                        doc_alloc,
-                    )
-                };
+                let mut token_fn =
+                    |fname: &str, fid, pos, word: &str, term_kind: SearchTermKind| {
+                        cached_sorter.insert_add_u32(
+                            fid,
+                            pos,
+                            word,
+                            is_exact(fname, word) && term_kind.is_original(),
+                            FieldDbExtraction::Extract,
+                            term_kind.is_original(),
+                            inner.docid(),
+                            doc_alloc,
+                        )
+                    };
                 document_tokenizer.tokenize_document(
                     inner.inserted(),
                     &mut should_tokenize,
@@ -649,7 +659,7 @@ impl WordDocidsExtractors {
 
                         Ok((fid, PatternMatch::Parent))
                     },
-                    &mut |_, _, _, _| Ok(()),
+                    &mut |_, _, _, _, _| Ok(()),
                 )?;
             }
             OneOrTwoTokenizers::TwoTokenizer { old: _, new: _ } => {
@@ -709,7 +719,11 @@ impl WordDocidsExtractors {
         // the language settings, dictionary, separators, non-separators...
         match document_tokenizers {
             OneOrTwoTokenizers::OneTokenizer(document_tokenizer) => {
-                let mut token_fn = |_field_name: &str, field_id, pos, word: &str| {
+                let mut token_fn = |_field_name: &str,
+                                    field_id,
+                                    pos,
+                                    word: &str,
+                                    term_kind: SearchTermKind| {
                     use PatternMatch::{Match, NoMatch, Parent};
 
                     let old_field_metadata = old_fields_ids_map.metadata(field_id).unwrap();
@@ -727,8 +741,10 @@ impl WordDocidsExtractors {
                             field_id,
                             pos,
                             word,
-                            old_exact == Match || old_disabled_typos_terms.is_exact(word),
+                            (old_exact == Match || old_disabled_typos_terms.is_exact(word))
+                                && term_kind.is_original(),
                             FieldDbExtraction::Extract,
+                            term_kind.is_original(),
                             document.docid(),
                             doc_alloc,
                         ),
@@ -743,8 +759,10 @@ impl WordDocidsExtractors {
                             field_id,
                             pos,
                             word,
-                            new_exact == Match || new_disabled_typos_terms.is_exact(word),
+                            (new_exact == Match || new_disabled_typos_terms.is_exact(word))
+                                && term_kind.is_original(),
                             FieldDbExtraction::Extract,
+                            term_kind.is_original(),
                             document.docid(),
                             doc_alloc,
                         ),
@@ -759,9 +777,11 @@ impl WordDocidsExtractors {
                                 field_id,
                                 pos,
                                 word,
-                                old_exact == Match || old_disabled_typos_terms.is_exact(word),
+                                (old_exact == Match || old_disabled_typos_terms.is_exact(word))
+                                    && term_kind.is_original(),
                                 // Should we really have this specific case?
                                 FieldDbExtraction::Skip,
+                                term_kind.is_original(),
                                 document.docid(),
                                 doc_alloc,
                             )?;
@@ -769,9 +789,11 @@ impl WordDocidsExtractors {
                                 field_id,
                                 pos,
                                 word,
-                                new_exact == Match || new_disabled_typos_terms.is_exact(word),
+                                (new_exact == Match || new_disabled_typos_terms.is_exact(word))
+                                    && term_kind.is_original(),
                                 // Should we really have this specific case?
                                 FieldDbExtraction::Skip,
+                                term_kind.is_original(),
                                 document.docid(),
                                 doc_alloc,
                             )
@@ -789,23 +811,27 @@ impl WordDocidsExtractors {
                 old: old_document_tokenizer,
                 new: new_document_tokenizer,
             } => {
-                let mut old_token_fn = |_field_name: &str, field_id, pos, word: &str| {
-                    use PatternMatch::Match;
+                let mut old_token_fn =
+                    |_field_name: &str, field_id, pos, word: &str, term_kind: SearchTermKind| {
+                        use PatternMatch::Match;
 
-                    match old_fields_ids_map.metadata(field_id).unwrap() {
-                        Metadata { searchable: (Match, _), exact: old_exact, .. } => cached_sorter
-                            .insert_del_u32(
-                                field_id,
-                                pos,
-                                word,
-                                old_exact == Match || old_disabled_typos_terms.is_exact(word),
-                                FieldDbExtraction::Extract,
-                                document.docid(),
-                                doc_alloc,
-                            ),
-                        _ => Ok(()),
-                    }
-                };
+                        match old_fields_ids_map.metadata(field_id).unwrap() {
+                            Metadata { searchable: (Match, _), exact: old_exact, .. } => {
+                                cached_sorter.insert_del_u32(
+                                    field_id,
+                                    pos,
+                                    word,
+                                    (old_exact == Match || old_disabled_typos_terms.is_exact(word))
+                                        && term_kind.is_original(),
+                                    FieldDbExtraction::Extract,
+                                    term_kind.is_original(),
+                                    document.docid(),
+                                    doc_alloc,
+                                )
+                            }
+                            _ => Ok(()),
+                        }
+                    };
 
                 old_document_tokenizer.tokenize_document(
                     current_document,
@@ -813,23 +839,27 @@ impl WordDocidsExtractors {
                     &mut old_token_fn,
                 )?;
 
-                let mut new_token_fn = |_field_name: &str, field_id, pos, word: &str| {
-                    use PatternMatch::Match;
+                let mut new_token_fn =
+                    |_field_name: &str, field_id, pos, word: &str, term_kind: SearchTermKind| {
+                        use PatternMatch::Match;
 
-                    match new_fields_ids_map.metadata(field_id).unwrap() {
-                        Metadata { searchable: (Match, _), exact: new_exact, .. } => cached_sorter
-                            .insert_add_u32(
-                                field_id,
-                                pos,
-                                word,
-                                new_exact == Match || new_disabled_typos_terms.is_exact(word),
-                                FieldDbExtraction::Extract,
-                                document.docid(),
-                                doc_alloc,
-                            ),
-                        _ => Ok(()),
-                    }
-                };
+                        match new_fields_ids_map.metadata(field_id).unwrap() {
+                            Metadata { searchable: (Match, _), exact: new_exact, .. } => {
+                                cached_sorter.insert_add_u32(
+                                    field_id,
+                                    pos,
+                                    word,
+                                    (new_exact == Match || new_disabled_typos_terms.is_exact(word))
+                                        && term_kind.is_original(),
+                                    FieldDbExtraction::Extract,
+                                    term_kind.is_original(),
+                                    document.docid(),
+                                    doc_alloc,
+                                )
+                            }
+                            _ => Ok(()),
+                        }
+                    };
 
                 new_document_tokenizer.tokenize_document(
                     current_document,

@@ -414,7 +414,7 @@ impl WordPairProximityDocidsExtractor {
 
                             Ok((fid, PatternMatch::Parent))
                         },
-                        &mut |_, _, _, _| Ok(()),
+                        &mut |_, _, _, _, _| Ok(()),
                     )?;
                 }
                 OneOrTwoTokenizers::TwoTokenizer { old: _, new: _ } => {
@@ -531,7 +531,7 @@ fn process_document_tokens<'doc>(
     word_pair_proximity: &mut impl FnMut((Rc<str>, Rc<str>), u8),
 ) -> Result<()> {
     let mut field_id = None;
-    let mut token_fn = |_fname: &str, fid: FieldId, pos: u16, word: &str| {
+    let mut token_fn = |_fname: &str, fid: FieldId, pos: u16, word: &str, _term_kind| {
         if field_id != Some(fid) {
             field_id = Some(fid);
             drain_word_positions(word_positions, word_pair_proximity);

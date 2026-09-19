@@ -56,6 +56,9 @@ jobs:
             COMMIT_SHA=${{ github.sha }}
             COMMIT_DATE=${{ steps.build-metadata.outputs.date }}
             GIT_TAG=${{ github.ref_name }}
-            EXTRA_ARGS=--locked
+            # The downstream alternate-term code is gated by Milli's Japanese
+            # Cargo feature. all-tokenizations enables Charabia dependencies
+            # but does not set that cfg flag in Milli.
+            EXTRA_ARGS=--locked --features japanese
           cache-from: type=gha
           cache-to: type=gha,mode=max

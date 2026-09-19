@@ -1,0 +1,60 @@
+name: Publish Japanese image to GHCR
+
+on:
+  push:
+    tags:
+      - 'japanese-v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^japanese-v[0-9]+\.[0-9]+\.[0-9]+-r[0-9]+$ ]]; then
+            echo "Invalid Japanese release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Set build metadata
+        id: build-metadata
+        run: |
+          echo "date=$(git show -s --format=%cd --date=iso-strict "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/abco20/meilisearch:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/abco20/meilisearch
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+            COMMIT_DATE=${{ steps.build-metadata.outputs.date }}
+            GIT_TAG=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

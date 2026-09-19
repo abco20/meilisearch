@@ -8,6 +8,7 @@ on:
     # The `latest` Docker image push is already done in this CI when releasing a stable version of Meilisearch.
     tags-ignore:
       - latest
+      - 'japanese-v*'
   # Both `schedule` and `workflow_dispatch` build the nightly tag
   schedule:
     - cron: '0 23 * * *' # Every day at 11:00pm

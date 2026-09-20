@@ -79,13 +79,14 @@ impl RankingRuleGraphTrait for PositionGraph {
         }
 
         let mut positions_for_costs = FxHashMap::<u32, Vec<u16>>::default();
+        let ranking_span_len = term.term_subset.ranking_span_len(ctx);
 
         for position in all_positions {
             // FIXME: bucketed position???
             let distance = position.abs_diff(*term.positions.start());
             let cost = {
                 let mut cost = 0;
-                for i in 0..term.term_ids.len() {
+                for i in 0..ranking_span_len {
                     // This is actually not fully correct and slightly penalises ngrams unfairly.
                     // Because if two words are in the same bucketed position (e.g. 32) and consecutive,
                     // then their position cost will be 32+32=64, but an ngram of these two words at the
@@ -97,7 +98,7 @@ impl RankingRuleGraphTrait for PositionGraph {
             positions_for_costs.entry(cost).or_default().push(position);
         }
 
-        let max_cost = term.term_ids.len() as u32 * 10;
+        let max_cost = ranking_span_len as u32 * 10;
         let max_cost_exists = positions_for_costs.contains_key(&max_cost);
 
         let mut edges = vec![];

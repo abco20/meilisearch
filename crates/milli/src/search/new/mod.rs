@@ -245,6 +245,8 @@ impl AddAssign for VectorStoreStats {
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq)]
 pub enum Word {
     Original(Interned<String>),
+    /// A zero-typo language representation of the original query term.
+    Variant(Interned<String>),
     Derived(Interned<String>),
 }
 
@@ -252,6 +254,7 @@ impl Word {
     pub fn interned(&self) -> Interned<String> {
         match self {
             Word::Original(word) => *word,
+            Word::Variant(word) => *word,
             Word::Derived(word) => *word,
         }
     }
@@ -342,7 +345,7 @@ pub(in crate::search) fn resolve_negative_phrases(
     let mut negative_bitmap = RoaringBitmap::new();
     for term in negative_phrases {
         let query_term = ctx.term_interner.get(term.value);
-        if let Some(phrase) = query_term.original_phrase() {
+        for phrase in query_term.original_and_alternate_phrases() {
             negative_bitmap |= ctx.get_phrase_docids(phrase)?;
         }
     }
@@ -947,10 +950,18 @@ pub fn extract_tokens(
     }
 
     let db_locales;
-    match locales {
+    let japanese_search_enabled = match locales {
         Some(locales) => {
             if !locales.is_empty() {
                 tokbuilder.allow_list(locales);
+            }
+            #[cfg(feature = "japanese")]
+            {
+                locales.contains(&Language::Jpn)
+            }
+            #[cfg(not(feature = "japanese"))]
+            {
+                false
             }
         }
         None => {
@@ -981,6 +992,14 @@ pub fn extract_tokens(
             if !db_locales.is_empty() {
                 tokbuilder.allow_list(&db_locales);
             }
+            #[cfg(feature = "japanese")]
+            {
+                db_locales.contains(&Language::Jpn)
+            }
+            #[cfg(not(feature = "japanese"))]
+            {
+                false
+            }
         }
     };
 
@@ -992,7 +1011,7 @@ pub fn extract_tokens(
     let tokens = tokenizer.tokenize(query);
     drop(entered);
 
-    located_query_terms_from_tokens(ctx, &tokenizer, tokens, words_limit)
+    located_query_terms_from_tokens(ctx, &tokenizer, tokens, words_limit, japanese_search_enabled)
 }
 
 pub(crate) fn check_sort_criteria(

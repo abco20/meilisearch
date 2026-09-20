@@ -71,7 +71,7 @@ impl RankingRuleGraphTrait for ExactnessGraph {
 
     #[tracing::instrument(level = "trace", skip_all, target = "search::exactness")]
     fn build_edges(
-        _ctx: &mut SearchContext<'_>,
+        ctx: &mut SearchContext<'_>,
         conditions_interner: &mut DedupInterner<Self::Condition>,
         _source_node: Option<&LocatedQueryTermSubset>,
         dest_node: &LocatedQueryTermSubset,
@@ -82,7 +82,10 @@ impl RankingRuleGraphTrait for ExactnessGraph {
         let skip_condition = ExactnessCondition::Any(dest_node.clone());
         let skip_condition = conditions_interner.insert(skip_condition);
 
-        Ok(vec![(0, exact_condition), (dest_node.term_ids.len() as u32, skip_condition)])
+        Ok(vec![
+            (0, exact_condition),
+            (dest_node.term_subset.ranking_span_len(ctx) as u32, skip_condition),
+        ])
     }
 
     #[tracing::instrument(level = "trace", skip_all, target = "search::exactness")]

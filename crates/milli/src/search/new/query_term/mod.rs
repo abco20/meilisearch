@@ -1,4 +1,6 @@
 mod compute_derivations;
+#[cfg(feature = "japanese")]
+pub(super) mod japanese;
 mod ntypo_subset;
 mod parse_query;
 mod phrase;
@@ -46,6 +48,7 @@ pub struct QueryTerm {
     ngram_words: Option<Vec<Interned<String>>>,
     max_levenshtein_distance: u8,
     is_prefix: bool,
+    ranking_span_len: u8,
     zero_typo: ZeroTypoTerm,
     // May not be computed yet
     one_typo: Lazy<OneTypoTerm>,
@@ -60,6 +63,10 @@ struct ZeroTypoTerm {
     phrase: Option<Interned<Phrase>>,
     /// A single word equivalent to the original term, with zero typos
     exact: Option<Interned<String>>,
+    /// Language-specific zero-typo representations of the original term.
+    alternates: BTreeSet<Interned<String>>,
+    /// Language-specific phrase representations, kept separate from semantic synonyms.
+    alternate_phrases: BTreeSet<Interned<Phrase>>,
     /// All the words that contain the original word as prefix
     prefix_of: BTreeSet<Interned<String>>,
     /// All the synonyms of the original word or phrase
@@ -211,6 +218,8 @@ impl QueryTermSubset {
                 let ZeroTypoTerm {
                     phrase: _,
                     exact: zero_typo,
+                    alternates,
+                    alternate_phrases: _,
                     prefix_of,
                     synonyms: _,
                     use_prefix_db: _,
@@ -229,11 +238,14 @@ impl QueryTermSubset {
                         Word::Original(w)
                     }
                 }));
+                result.extend(alternates.iter().copied().map(Word::Variant));
             }
             NTypoTermSubset::Subset { words, phrases: _ } => {
                 let ZeroTypoTerm {
                     phrase: _,
                     exact: zero_typo,
+                    alternates,
+                    alternate_phrases: _,
                     prefix_of,
                     synonyms: _,
                     use_prefix_db: _,
@@ -254,6 +266,7 @@ impl QueryTermSubset {
                         Word::Original(w)
                     }
                 }));
+                result.extend(alternates.intersection(words).copied().map(Word::Variant));
             }
             NTypoTermSubset::Nothing => {}
         }
@@ -298,9 +311,17 @@ impl QueryTermSubset {
         }
         let original = ctx.term_interner.get_mut(self.original);
 
-        let ZeroTypoTerm { phrase, exact: _, prefix_of: _, synonyms, use_prefix_db: _ } =
-            &original.zero_typo;
+        let ZeroTypoTerm {
+            phrase,
+            exact: _,
+            alternates: _,
+            alternate_phrases,
+            prefix_of: _,
+            synonyms,
+            use_prefix_db: _,
+        } = &original.zero_typo;
         result.extend(phrase.iter().copied());
+        result.extend(alternate_phrases.iter().copied());
         result.extend(synonyms.iter().copied());
 
         match &self.one_typo_subset {
@@ -368,6 +389,9 @@ impl QueryTermSubset {
             _ => panic!(),
         }
     }
+    pub fn ranking_span_len(&self, ctx: &SearchContext<'_>) -> usize {
+        ctx.term_interner.get(self.original).ranking_span_len as usize
+    }
     pub fn keep_only_exact_term(&mut self, ctx: &SearchContext<'_>) {
         if let Some(term) = self.exact_term(ctx) {
             match term {
@@ -407,9 +431,19 @@ impl QueryTermSubset {
 
 impl ZeroTypoTerm {
     fn is_empty(&self) -> bool {
-        let ZeroTypoTerm { phrase, exact: zero_typo, prefix_of, synonyms, use_prefix_db } = self;
+        let ZeroTypoTerm {
+            phrase,
+            exact: zero_typo,
+            alternates,
+            alternate_phrases,
+            prefix_of,
+            synonyms,
+            use_prefix_db,
+        } = self;
         phrase.is_none()
             && zero_typo.is_none()
+            && alternates.is_empty()
+            && alternate_phrases.is_empty()
             && prefix_of.is_empty()
             && synonyms.is_empty()
             && use_prefix_db.is_none()
@@ -461,6 +495,8 @@ impl Interned<QueryTerm> {
 pub struct LocatedQueryTerm {
     pub value: Interned<QueryTerm>,
     pub positions: RangeInclusive<u16>,
+    #[cfg(feature = "japanese")]
+    pub(crate) japanese_variants: crate::japanese::SearchVariants<Interned<String>>,
 }
 
 impl LocatedQueryTerm {
@@ -485,15 +521,31 @@ impl QueryTerm {
         self.zero_typo.phrase
     }
 
+    pub fn original_and_alternate_phrases(&self) -> Vec<Interned<Phrase>> {
+        let mut phrases = Vec::with_capacity(1 + self.zero_typo.alternate_phrases.len());
+        phrases.extend(self.zero_typo.phrase);
+        phrases.extend(self.zero_typo.alternate_phrases.iter().copied());
+        phrases
+    }
+
     pub fn all_computed_derivations(&self) -> (Vec<Interned<String>>, Vec<Interned<Phrase>>) {
         let mut words = BTreeSet::new();
         let mut phrases = BTreeSet::new();
 
-        let ZeroTypoTerm { phrase, exact: zero_typo, prefix_of, synonyms, use_prefix_db: _ } =
-            &self.zero_typo;
+        let ZeroTypoTerm {
+            phrase,
+            exact: zero_typo,
+            alternates,
+            alternate_phrases,
+            prefix_of,
+            synonyms,
+            use_prefix_db: _,
+        } = &self.zero_typo;
         words.extend(zero_typo.iter().copied());
+        words.extend(alternates.iter().copied());
         words.extend(prefix_of.iter().copied());
         phrases.extend(phrase.iter().copied());
+        phrases.extend(alternate_phrases.iter().copied());
         phrases.extend(synonyms.iter().copied());
 
         if let Lazy::Init(OneTypoTerm { split_words, one_typo }) = &self.one_typo {

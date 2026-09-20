@@ -23,6 +23,8 @@ mod filterable_attributes_rules;
 mod foreign_key;
 pub mod heed_codec;
 pub mod index;
+#[cfg(feature = "japanese")]
+mod japanese;
 mod localized_attributes_rules;
 pub mod must_stop_processing;
 pub mod order_by_map;

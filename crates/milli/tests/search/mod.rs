@@ -22,6 +22,8 @@ use slice_group_by::GroupBy;
 mod distinct;
 mod facet_distribution;
 mod filters;
+#[cfg(feature = "japanese")]
+mod japanese;
 mod phrase_search;
 mod query_criteria;
 mod sort;

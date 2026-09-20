@@ -8,12 +8,12 @@ use crate::search::new::SearchContext;
 use crate::Result;
 
 pub fn build_edges(
-    _ctx: &mut SearchContext<'_>,
+    ctx: &mut SearchContext<'_>,
     conditions_interner: &mut DedupInterner<ProximityCondition>,
     left_term: Option<&LocatedQueryTermSubset>,
     right_term: &LocatedQueryTermSubset,
 ) -> Result<Vec<(u32, Interned<ProximityCondition>)>> {
-    let right_ngram_max = right_term.term_ids.len().saturating_sub(1);
+    let right_ngram_max = right_term.term_subset.ranking_span_len(ctx).saturating_sub(1);
 
     let Some(left_term) = left_term else {
         return Ok(vec![(

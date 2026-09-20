@@ -171,6 +171,7 @@ pub fn partially_initialized_term_from_word(
     ctx: &mut SearchContext<'_>,
     tokenizer: &Tokenizer<'_>,
     word: &str,
+    search_alternates: &[String],
     max_typo: u8,
     is_prefix: bool,
     is_ngram: bool,
@@ -184,6 +185,7 @@ pub fn partially_initialized_term_from_word(
                 ngram_words: None,
                 is_prefix: false,
                 max_levenshtein_distance: 0,
+                ranking_span_len: 1,
                 zero_typo: <_>::default(),
                 one_typo: Lazy::Init(<_>::default()),
                 two_typo: Lazy::Init(<_>::default()),
@@ -218,6 +220,18 @@ pub fn partially_initialized_term_from_word(
         find_zero_typo_prefix_derivations(ctx, word_interned, &mut prefix_of)?;
     }
 
+    let mut alternates = BTreeSet::new();
+    if zero_typo.is_none() {
+        for alternate in search_alternates {
+            if alternate != word
+                && alternate.len() <= MAX_WORD_LENGTH
+                && ctx.index.contains_word(ctx.txn, alternate)?
+            {
+                alternates.insert(ctx.word_interner.insert(alternate.clone()));
+            }
+        }
+    }
+
     let mut synonym_word_count = 0;
     let synonyms = ctx
         .index
@@ -238,14 +252,22 @@ pub fn partially_initialized_term_from_word(
         })
         .collect();
 
-    let zero_typo =
-        ZeroTypoTerm { phrase: None, exact: zero_typo, prefix_of, synonyms, use_prefix_db };
+    let zero_typo = ZeroTypoTerm {
+        phrase: None,
+        exact: zero_typo,
+        alternates,
+        alternate_phrases: BTreeSet::new(),
+        prefix_of,
+        synonyms,
+        use_prefix_db,
+    };
 
     Ok(QueryTerm {
         original: word_interned,
         ngram_words: None,
         max_levenshtein_distance: max_typo,
         is_prefix,
+        ranking_span_len: 1,
         zero_typo,
         one_typo: Lazy::Uninit,
         two_typo: Lazy::Uninit,

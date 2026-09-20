@@ -186,7 +186,7 @@ impl<'ctx> SearchContext<'ctx> {
         word: Word,
     ) -> Result<Option<RoaringBitmap>> {
         match word {
-            Word::Original(word) => {
+            Word::Original(word) | Word::Variant(word) => {
                 let exact = self.get_db_exact_word_docids(universe, word)?;
                 let tolerant = self.get_db_word_docids(universe, word)?;
                 Ok(match (exact, tolerant) {
@@ -275,7 +275,7 @@ impl<'ctx> SearchContext<'ctx> {
         prefix: Word,
     ) -> Result<Option<RoaringBitmap>> {
         match prefix {
-            Word::Original(prefix) => {
+            Word::Original(prefix) | Word::Variant(prefix) => {
                 let exact = self.get_db_exact_word_prefix_docids(universe, prefix)?;
                 let tolerant = self.get_db_word_prefix_docids(universe, prefix)?;
                 Ok(match (exact, tolerant) {

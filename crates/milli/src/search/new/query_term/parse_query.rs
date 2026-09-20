@@ -23,6 +23,41 @@ pub struct ExtractedTokens {
     pub negative_phrases: Vec<LocatedQueryTerm>,
 }
 
+fn located_word_term(
+    ctx: &mut SearchContext<'_>,
+    tokenizer: &Tokenizer<'_>,
+    token: &charabia::Token<'_>,
+    position: u16,
+    max_typo: u8,
+    is_prefix: bool,
+) -> Result<LocatedQueryTerm> {
+    let word = token.lemma();
+
+    #[cfg(feature = "japanese")]
+    let japanese_variants = crate::japanese::search_variants(token);
+    #[cfg(feature = "japanese")]
+    let search_alternates = japanese_variants.iter_unique().cloned().collect::<Vec<_>>();
+    #[cfg(not(feature = "japanese"))]
+    let search_alternates = Vec::new();
+
+    let term = partially_initialized_term_from_word(
+        ctx,
+        tokenizer,
+        word,
+        &search_alternates,
+        max_typo,
+        is_prefix,
+        false,
+    )?;
+
+    Ok(LocatedQueryTerm {
+        value: ctx.term_interner.push(term),
+        positions: position..=position,
+        #[cfg(feature = "japanese")]
+        japanese_variants: japanese_variants.map(|variant| ctx.word_interner.insert(variant)),
+    })
+}
+
 /// Convert the tokenised search query into a list of located query terms.
 #[tracing::instrument(level = "trace", skip_all, target = "search::query")]
 pub fn located_query_terms_from_tokens(
@@ -30,7 +65,10 @@ pub fn located_query_terms_from_tokens(
     tokenizer: &Tokenizer<'_>,
     query: NormalizedTokenIter<'_, '_, '_, '_>,
     words_limit: Option<usize>,
+    japanese_search_enabled: bool,
 ) -> Result<ExtractedTokens> {
+    #[cfg(not(feature = "japanese"))]
+    let _ = japanese_search_enabled;
     let nbr_typos = number_of_typos_allowed(ctx)?;
     let allow_prefix_search = ctx.is_prefix_search_allowed();
 
@@ -56,7 +94,8 @@ pub fn located_query_terms_from_tokens(
 
         // early return if word limit is exceeded
         if query_terms.len() >= parts_limit {
-            let (graph, query_terms) = QueryGraph::from_query(ctx, tokenizer, &query_terms)?;
+            let (graph, query_terms) =
+                QueryGraph::from_query(ctx, tokenizer, &query_terms, japanese_search_enabled)?;
 
             return Ok(ExtractedTokens { query_terms, graph, negative_words, negative_phrases });
         }
@@ -73,44 +112,48 @@ pub fn located_query_terms_from_tokens(
                     phrase.push_word(ctx, &token, position)
                 } else if negative_next_token {
                     let word = token.lemma().to_string();
-                    let word = Word::Original(ctx.word_interner.insert(word));
-                    negative_words.push(word);
+                    #[cfg(feature = "japanese")]
+                    let surface_is_indexed = ctx.index.contains_word(ctx.txn, &word)?;
+                    negative_words.push(Word::Original(ctx.word_interner.insert(word)));
+
+                    #[cfg(feature = "japanese")]
+                    if japanese_search_enabled && !surface_is_indexed {
+                        for alternate in crate::japanese::search_variants(&token).iter_unique() {
+                            if alternate.len() <= MAX_WORD_LENGTH
+                                && ctx.index.contains_word(ctx.txn, alternate)?
+                            {
+                                negative_words.push(Word::Variant(
+                                    ctx.word_interner.insert(alternate.clone()),
+                                ));
+                            }
+                        }
+                    }
                     negative_next_token = false;
                 } else if peekable.peek().is_some() {
                     match token.kind {
                         TokenKind::Word => {
                             let word = token.lemma();
-                            let term = partially_initialized_term_from_word(
+                            query_terms.push(located_word_term(
                                 ctx,
                                 tokenizer,
-                                word,
+                                &token,
+                                position,
                                 nbr_typos(word),
                                 false,
-                                false,
-                            )?;
-                            let located_term = LocatedQueryTerm {
-                                value: ctx.term_interner.push(term),
-                                positions: position..=position,
-                            };
-                            query_terms.push(located_term);
+                            )?);
                         }
                         TokenKind::StopWord | TokenKind::Separator(_) | TokenKind::Unknown => (),
                     }
                 } else {
                     let word = token.lemma();
-                    let term = partially_initialized_term_from_word(
+                    query_terms.push(located_word_term(
                         ctx,
                         tokenizer,
-                        word,
+                        &token,
+                        position,
                         nbr_typos(word),
                         allow_prefix_search,
-                        false,
-                    )?;
-                    let located_term = LocatedQueryTerm {
-                        value: ctx.term_interner.push(term),
-                        positions: position..=position,
-                    };
-                    query_terms.push(located_term);
+                    )?);
                 }
             }
             TokenKind::Separator(separator_kind) => {
@@ -125,7 +168,7 @@ pub fn located_query_terms_from_tokens(
                     // If we have a hard separator inside a phrase, we immediately start a new phrase
                     let phrase = if separator_kind == SeparatorKind::Hard {
                         if let Some(phrase) = phrase {
-                            if let Some(located_query_term) = phrase.build(ctx) {
+                            if let Some(located_query_term) = phrase.build(ctx)? {
                                 // as we are evaluating a negative operator we put the phrase
                                 // in the negative one *but* we don't reset the negative operator
                                 // as we are immediately starting a new negative phrase.
@@ -135,7 +178,7 @@ pub fn located_query_terms_from_tokens(
                                     query_terms.push(located_query_term);
                                 }
                             }
-                            Some(PhraseBuilder::empty())
+                            Some(PhraseBuilder::empty(japanese_search_enabled))
                         } else {
                             None
                         }
@@ -153,7 +196,7 @@ pub fn located_query_terms_from_tokens(
                     if let Some(phrase) = phrase {
                         // Per the check above, quote_count > 0
                         quote_count -= 1;
-                        if let Some(located_query_term) = phrase.build(ctx) {
+                        if let Some(located_query_term) = phrase.build(ctx)? {
                             // we were evaluating a negative operator so we
                             // put the phrase in the negative phrases
                             if negative_phrase {
@@ -168,7 +211,7 @@ pub fn located_query_terms_from_tokens(
                     // Start new phrase if the token ends with an opening quote
                     if quote_count % 2 == 1 {
                         negative_phrase = negative_next_token;
-                        Some(PhraseBuilder::empty())
+                        Some(PhraseBuilder::empty(japanese_search_enabled))
                     } else {
                         None
                     }
@@ -186,7 +229,7 @@ pub fn located_query_terms_from_tokens(
 
     // If a quote is never closed, we consider all of the end of the query as a phrase.
     if let Some(phrase) = phrase.take() {
-        if let Some(located_query_term) = phrase.build(ctx) {
+        if let Some(located_query_term) = phrase.build(ctx)? {
             // put the phrase in the negative set if we are evaluating a negative operator.
             if negative_phrase {
                 negative_phrases.push(located_query_term);
@@ -196,7 +239,8 @@ pub fn located_query_terms_from_tokens(
         }
     }
 
-    let (graph, query_terms) = QueryGraph::from_query(ctx, tokenizer, &query_terms)?;
+    let (graph, query_terms) =
+        QueryGraph::from_query(ctx, tokenizer, &query_terms, japanese_search_enabled)?;
 
     Ok(ExtractedTokens { query_terms, graph, negative_words, negative_phrases })
 }
@@ -265,10 +309,14 @@ pub fn make_ngram(
     let max_nbr_typos =
         number_of_typos_allowed(ngram_str.as_str()).saturating_sub(terms.len() as u8 - 1);
 
+    #[cfg(feature = "japanese")]
+    let japanese_variants = super::japanese::concatenate_variants(ctx, terms);
+
     let mut term = partially_initialized_term_from_word(
         ctx,
         tokenizer,
         &ngram_str,
+        &[],
         max_nbr_typos,
         is_prefix,
         true,
@@ -289,25 +337,46 @@ pub fn make_ngram(
         ngram_words: Some(words_interned),
         is_prefix,
         max_levenshtein_distance: max_nbr_typos,
+        ranking_span_len: terms.len() as u8,
         zero_typo: term.zero_typo,
         one_typo: Lazy::Uninit,
         two_typo: Lazy::Uninit,
     };
 
-    let term = LocatedQueryTerm { value: ctx.term_interner.push(term), positions: start..=end };
+    let term = LocatedQueryTerm {
+        value: ctx.term_interner.push(term),
+        positions: start..=end,
+        #[cfg(feature = "japanese")]
+        japanese_variants: japanese_variants.map(|variant| ctx.word_interner.insert(variant)),
+    };
 
     Ok(Some(term))
 }
 
 struct PhraseBuilder {
     words: Vec<Option<crate::search::new::Interned<String>>>,
+    #[cfg(feature = "japanese")]
+    japanese_variants: Vec<crate::japanese::SearchVariants<crate::search::new::Interned<String>>>,
+    #[cfg(feature = "japanese")]
+    japanese_search_enabled: bool,
     start: u16,
     end: u16,
 }
 
 impl PhraseBuilder {
-    fn empty() -> Self {
-        Self { words: Default::default(), start: u16::MAX, end: u16::MAX }
+    fn empty(japanese_search_enabled: bool) -> Self {
+        #[cfg(not(feature = "japanese"))]
+        let _ = japanese_search_enabled;
+
+        Self {
+            words: Default::default(),
+            #[cfg(feature = "japanese")]
+            japanese_variants: Default::default(),
+            #[cfg(feature = "japanese")]
+            japanese_search_enabled,
+            start: u16::MAX,
+            end: u16::MAX,
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -327,39 +396,61 @@ impl PhraseBuilder {
         self.end = position;
         if let TokenKind::StopWord = token.kind {
             self.words.push(None);
+            #[cfg(feature = "japanese")]
+            self.japanese_variants.push(Default::default());
         } else {
             // token has kind Word
             let word = ctx.word_interner.insert(token.lemma().to_string());
             self.words.push(Some(word));
+            #[cfg(feature = "japanese")]
+            self.japanese_variants.push(
+                crate::japanese::search_variants(token)
+                    .map(|variant| ctx.word_interner.insert(variant)),
+            );
         }
     }
 
-    fn build(self, ctx: &mut SearchContext<'_>) -> Option<LocatedQueryTerm> {
+    fn build(self, ctx: &mut SearchContext<'_>) -> Result<Option<LocatedQueryTerm>> {
         if self.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some(LocatedQueryTerm {
-            value: ctx.term_interner.push({
-                let phrase = ctx.phrase_interner.insert(Phrase { words: self.words });
-                let phrase_desc = phrase.description(ctx);
-                QueryTerm {
-                    original: ctx.word_interner.insert(phrase_desc),
-                    ngram_words: None,
-                    max_levenshtein_distance: 0,
-                    is_prefix: false,
-                    zero_typo: ZeroTypoTerm {
-                        phrase: Some(phrase),
-                        exact: None,
-                        prefix_of: BTreeSet::default(),
-                        synonyms: BTreeSet::default(),
-                        use_prefix_db: None,
-                    },
-                    one_typo: Lazy::Uninit,
-                    two_typo: Lazy::Uninit,
-                }
+
+        let phrase = ctx.phrase_interner.insert(Phrase { words: self.words });
+
+        #[cfg(feature = "japanese")]
+        let alternate_phrases = if self.japanese_search_enabled {
+            super::japanese::alternate_phrases(ctx, phrase, &self.japanese_variants)?
+        } else {
+            BTreeSet::new()
+        };
+        #[cfg(not(feature = "japanese"))]
+        let alternate_phrases = BTreeSet::new();
+
+        let phrase_desc = phrase.description(ctx);
+
+        Ok(Some(LocatedQueryTerm {
+            value: ctx.term_interner.push(QueryTerm {
+                original: ctx.word_interner.insert(phrase_desc),
+                ngram_words: None,
+                max_levenshtein_distance: 0,
+                is_prefix: false,
+                ranking_span_len: 1,
+                zero_typo: ZeroTypoTerm {
+                    phrase: Some(phrase),
+                    exact: None,
+                    alternates: BTreeSet::default(),
+                    alternate_phrases,
+                    prefix_of: BTreeSet::default(),
+                    synonyms: BTreeSet::default(),
+                    use_prefix_db: None,
+                },
+                one_typo: Lazy::Uninit,
+                two_typo: Lazy::Uninit,
             }),
             positions: self.start..=self.end,
-        })
+            #[cfg(feature = "japanese")]
+            japanese_variants: Default::default(),
+        }))
     }
 }
 

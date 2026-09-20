@@ -98,10 +98,20 @@ impl QueryGraph {
         tokenizer: &Tokenizer<'_>,
         // The terms here must be consecutive
         terms: &[LocatedQueryTerm],
+        japanese_search_enabled: bool,
     ) -> Result<(QueryGraph, Vec<LocatedQueryTerm>)> {
+        #[cfg(not(feature = "japanese"))]
+        let _ = japanese_search_enabled;
         let mut new_located_query_terms = terms.to_vec();
 
         let nbr_typos = number_of_typos_allowed(ctx)?;
+
+        #[cfg(feature = "japanese")]
+        let japanese_resegmentations = if japanese_search_enabled {
+            query_term::japanese::resegmentation_candidates(ctx, terms)?
+        } else {
+            Vec::new()
+        };
 
         let mut nodes_data: Vec<QueryNodeData> = vec![QueryNodeData::Start, QueryNodeData::End];
         let root_node = 0;
@@ -162,6 +172,23 @@ impl QueryGraph {
                     );
                     new_nodes.push(ngram_idx);
                 }
+            }
+
+            #[cfg(feature = "japanese")]
+            for candidate in
+                japanese_resegmentations.iter().filter(|candidate| candidate.attach_at == term_idx)
+            {
+                let resegmented = candidate.term.clone();
+                new_located_query_terms.push(resegmented.clone());
+                let resegmented_idx = add_node(
+                    &mut nodes_data,
+                    QueryNodeData::Term(LocatedQueryTermSubset {
+                        term_subset: QueryTermSubset::full(resegmented.value),
+                        positions: resegmented.positions,
+                        term_ids: candidate.start_idx as u8..=candidate.end_idx as u8,
+                    }),
+                );
+                new_nodes.push(resegmented_idx);
             }
             (prev0, prev1, prev2) = (new_nodes, prev0, prev1);
         }

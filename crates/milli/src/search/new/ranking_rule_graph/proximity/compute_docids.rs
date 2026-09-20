@@ -31,7 +31,7 @@ pub fn compute_docids(
         }
     };
 
-    let right_term_ngram_len = right_term.term_ids.len() as u8;
+    let right_term_ngram_len = right_term.term_subset.ranking_span_len(ctx) as u8;
 
     // e.g. for the simple words `sun .. flower`
     // the cost is 5
